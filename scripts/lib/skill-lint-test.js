@@ -351,6 +351,109 @@ test('an unterminated quote is rejected', () => {
   assert.match(yamlErrors(result)[0], /never closes/);
 });
 
+// A plain (unquoted) YAML scalar may not BEGIN with certain indicator characters.
+// The set below was not read off the spec — it was measured against js-yaml, both
+// with and without a following space, and only characters invalid in *both* forms
+// with no legitimate single-line use are rejected here. Anything ambiguous is left
+// alone on purpose, and the second test pins that so the rule cannot be widened
+// into false positives later.
+//
+// The backtick is the one that actually bites this repo: descriptions routinely
+// name other skills, and `\`alpha\` designs things` is a natural way to start one.
+for (const [label, value] of [
+  ['a backtick', '`alpha` designs things. Use when alpha.'],
+  ['an at sign', '@team owns this. Use when alpha.'],
+  ['a percent sign', '%complete coverage. Use when alpha.'],
+]) {
+  test(`an unquoted value starting with ${label} is rejected`, () => {
+    const result = lintSkillContent(
+      'alpha',
+      fmLines(`description: ${value}`),
+      KNOWN,
+    );
+    assert.equal(yamlErrors(result).length, 1);
+    assert.match(yamlErrors(result)[0], /reserved|cannot begin|indicator/i);
+  });
+}
+
+for (const [label, value] of [
+  ['a dash', '- Designs things. Use when alpha.'],
+  ['a question mark', '? Designs things. Use when alpha.'],
+  ['an ampersand', '& Designs things. Use when alpha.'],
+]) {
+  test(`an unquoted value starting with ${label} and a space is rejected`, () => {
+    const result = lintSkillContent(
+      'alpha',
+      fmLines(`description: ${value}`),
+      KNOWN,
+    );
+    assert.equal(yamlErrors(result).length, 1);
+  });
+}
+
+test('quoting the value makes every reserved start valid again', () => {
+  for (const value of ['`alpha` x', '@team x', '%x', '- x', '? x', '& x']) {
+    const result = lintSkillContent(
+      'alpha',
+      fmLines(`description: "${value}"`),
+      KNOWN,
+    );
+    assert.deepEqual(yamlErrors(result), [], `quoted ${value} must be accepted`);
+  }
+});
+
+test('starts that YAML accepts are deliberately NOT rejected', () => {
+  // Each parses cleanly under PyYAML and psych, so flagging them would be a
+  // false positive on valid frontmatter. Pinned so the rule stays narrow.
+  //
+  // `,leading comma is fine` used to be in this list. It is not fine — both
+  // parsers reject it, and this test was pinning a claim I had asserted without
+  // measuring. It now appears in the rejected set below instead.
+  for (const value of [
+    ':platform is fine',          // a colon not followed by a space
+    '-hyphenated is fine',        // a dash not followed by a space
+    'Designs `alpha` things',     // a backtick anywhere but the first character
+    'Designs @team things',       // an at sign anywhere but the first character
+    '#not-a-comment-here',
+    '&anchor-like but valid',     // `&foo` parses; only `& ` is an indicator
+    '[a, b]',                     // a flow sequence is valid, so `[` stays allowed
+    // `{a: b}` is valid YAML too, and `{` is likewise not flagged here — but it
+    // trips the pre-existing colon-space rule, so it is not asserted as accepted.
+    // That false positive predates this change and is left alone.
+  ]) {
+    const result = lintSkillContent('alpha', fmLines(`description: ${value}`), KNOWN);
+    assert.deepEqual(yamlErrors(result), [], `${value} must be accepted`);
+  }
+});
+
+test('indicator characters both parsers reject are flagged', () => {
+  // Measured, not read off the spec: each of these is rejected by PyYAML and by
+  // psych, and none has a legitimate use at the start of a plain scalar.
+  for (const value of [
+    ',leading comma',
+    '*alias-like',
+    '`skill` does X',
+    '@team owns this',
+    '%directive-like',
+  ]) {
+    const result = lintSkillContent('alpha', fmLines(`description: ${value}`), KNOWN);
+    assert.equal(yamlErrors(result).length, 1, `${value} must be rejected`);
+  }
+});
+
+test('a one-line block scalar header is flagged but a real block scalar is not', () => {
+  // `|` with content on the same line is not a block scalar — it is a plain
+  // scalar opening with an indicator, and both parsers reject it. `|` alone,
+  // with indented lines under it, is valid and must stay allowed.
+  for (const value of ['|folded text', '>folded text']) {
+    const result = lintSkillContent('alpha', fmLines(`description: ${value}`), KNOWN);
+    assert.equal(yamlErrors(result).length, 1, `${value} must be rejected`);
+  }
+
+  const genuine = lintSkillContent('alpha', fmLines('description: |'), KNOWN);
+  assert.deepEqual(yamlErrors(genuine), [], 'a bare block-scalar header must be accepted');
+});
+
 test('a duplicate key is not reported, because YAML accepts it', () => {
   // Deliberate boundary: `safe_load` accepts duplicate keys, so flagging them
   // here would fail files no host rejects. The rule tracks the parser, not taste.
